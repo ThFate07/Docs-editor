@@ -1,6 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  addBrowserPerson,
+  deleteBrowserPerson,
+  emptyBrowserPeopleSnapshot,
+  listBrowserPeople,
+  saveBrowserPeople,
+  subscribeToBrowserPeople,
+  updateBrowserPerson,
+} from "@/lib/browserPeopleStore";
 
 type Person = { id: string; name: string; className: string; rollNo: string };
 
@@ -27,11 +36,14 @@ function pairKey(docId: string, personId: string): string {
 }
 
 export default function Dashboard() {
-  const [people, setPeople] = useState<Person[]>([]);
-  const [peopleLoading, setPeopleLoading] = useState(true);
+  const people = useSyncExternalStore(
+    subscribeToBrowserPeople,
+    listBrowserPeople,
+    emptyBrowserPeopleSnapshot
+  );
   const [form, setForm] = useState({ name: "", className: "", rollNo: "" });
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deselectedIds, setDeselectedIds] = useState<Set<string>>(new Set());
 
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [files, setFiles] = useState<UploadResult[]>([]);
@@ -67,8 +79,12 @@ export default function Dashboard() {
     [files]
   );
   const selectedPeople = useMemo(
-    () => people.filter((p) => selectedIds.has(p.id)),
-    [people, selectedIds]
+    () => people.filter((p) => !deselectedIds.has(p.id)),
+    [people, deselectedIds]
+  );
+  const selectedIds = useMemo(
+    () => new Set<string>(selectedPeople.map((person) => person.id)),
+    [selectedPeople]
   );
   const selectedCombinations = useMemo<GenerationSelection[]>(() => {
     const selections: GenerationSelection[] = [];
@@ -82,41 +98,22 @@ export default function Dashboard() {
     return selections;
   }, [validFiles, selectedPeople, excludedPairs]);
 
-  useEffect(() => {
-    loadPeople();
-  }, []);
-
-  async function loadPeople() {
-    setPeopleLoading(true);
-    const res = await fetch("/api/people");
-    const data = await res.json();
-    const loadedPeople = (data.people ?? []) as Person[];
-    const loadedIds = new Set<string>(loadedPeople.map((p) => p.id));
-    setPeople(loadedPeople);
-    setSelectedIds(new Set<string>(loadedIds));
+  function syncPeople(nextPeople: Person[]) {
+    const loadedIds = new Set<string>(nextPeople.map((p) => p.id));
+    saveBrowserPeople(nextPeople);
+    setDeselectedIds((prev) => new Set([...prev].filter((id) => loadedIds.has(id))));
     setExcludedPairs((prev) => new Set([...prev].filter((key) => loadedIds.has(key.split(":")[1]))));
-    setPeopleLoading(false);
   }
 
-  async function handleAddOrUpdate(e: React.FormEvent) {
+  function handleAddOrUpdate(e: React.FormEvent) {
     e.preventDefault();
     if (!form.name.trim()) return;
-    if (editingId) {
-      await fetch(`/api/people/${editingId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
-      });
-    } else {
-      await fetch("/api/people", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
-      });
-    }
+    const nextPeople = editingId
+      ? updateBrowserPerson(people, editingId, form)
+      : addBrowserPerson(people, form);
+    syncPeople(nextPeople);
     setForm({ name: "", className: "", rollNo: "" });
     setEditingId(null);
-    loadPeople();
   }
 
   function startEdit(p: Person) {
@@ -124,21 +121,20 @@ export default function Dashboard() {
     setForm({ name: p.name, className: p.className, rollNo: p.rollNo });
   }
 
-  async function handleDelete(id: string) {
-    await fetch(`/api/people/${id}`, { method: "DELETE" });
+  function handleDelete(id: string) {
+    syncPeople(deleteBrowserPerson(people, id));
     if (editingId === id) {
       setEditingId(null);
       setForm({ name: "", className: "", rollNo: "" });
     }
-    loadPeople();
   }
 
   function toggleSelected(id: string) {
     const isSelected = selectedIds.has(id);
-    setSelectedIds((prev) => {
+    setDeselectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (isSelected) next.add(id);
+      else next.delete(id);
       return next;
     });
     if (isSelected) {
@@ -212,7 +208,7 @@ export default function Dashboard() {
       body: JSON.stringify({
         sessionId,
         files: validFiles.map((f) => ({ docId: f.docId, originalName: f.originalName })),
-        personIds: Array.from(selectedIds),
+        people: selectedPeople,
         selections: selectedCombinations,
       }),
     });
@@ -250,7 +246,7 @@ export default function Dashboard() {
       body: JSON.stringify({
         sessionId,
         files: validFiles.map((f) => ({ docId: f.docId, originalName: f.originalName })),
-        personIds: Array.from(selectedIds),
+        people: selectedPeople,
         selections: selectedCombinations,
       }),
     });
@@ -366,9 +362,7 @@ export default function Dashboard() {
             </div>
           </form>
 
-          {peopleLoading ? (
-            <p className="text-sm text-ink-muted">Loading…</p>
-          ) : people.length === 0 ? (
+          {people.length === 0 ? (
             <p className="text-sm text-ink-muted">No one on the roster yet. Add someone above.</p>
           ) : (
             <ul className="space-y-1.5 max-h-[420px] overflow-y-auto pr-1">

@@ -6,8 +6,8 @@ zipped up and ready to download.
 
 ## How it works
 
-1. **Roster** — add each person's Name, Class, and Roll No. This is saved and
-   persists between visits.
+1. **Roster** — add each person's Name, Class, and Roll No. This is saved in
+   the browser with `localStorage` and persists between visits on that device.
 2. **Upload** — drop in one or more `.docx` experiment files. Each one is
    scanned for its header and you'll see a live preview of what was detected:
    - **Name found** — header already has values; they'll be overwritten per person.
@@ -47,28 +47,25 @@ Open http://localhost:3000 and log in with the password you set.
 
 ## Deploying to Vercel
 
-This app currently stores data on the local filesystem (`/data`), which works
-fine for local use but **will not persist** on Vercel — serverless functions
-get a fresh, ephemeral filesystem on every invocation. Before deploying for
-real (public, always-available) use, swap the storage layer:
+The people roster is browser-local and does not use Vercel server storage.
+Each browser/device gets its own saved roster.
 
-1. **People list** → replace `src/lib/peopleStore.ts` with a version backed
-   by [Vercel Postgres](https://vercel.com/docs/storage/vercel-postgres) or
-   [Vercel KV](https://vercel.com/docs/storage/vercel-kv). The function
-   signatures (`listPeople`, `addPerson`, `updatePerson`, `deletePerson`)
-   are the only thing calling code depends on — keep those the same and
-   nothing else in the app needs to change.
-2. **Uploaded / generated files** → replace `src/lib/fileStore.ts` with a
+This app still stores uploaded and generated files on the local server
+filesystem (`/data`). That can work during a warm serverless invocation, but it
+is not durable on Vercel because functions have an ephemeral filesystem. For
+production-grade file handling on Vercel:
+
+1. **Uploaded / generated files** → replace `src/lib/fileStore.ts` with a
    version backed by [Vercel Blob](https://vercel.com/docs/storage/vercel-blob).
    Same idea: keep the exported function signatures the same.
-3. Set `APP_PASSWORD` as an environment variable in the Vercel dashboard
+2. Set `APP_PASSWORD` as an environment variable in the Vercel dashboard
    (Project Settings → Environment Variables).
-4. Push to a Git repo and import it in Vercel, or run `vercel deploy` from
+3. Push to a Git repo and import it in Vercel, or run `vercel deploy` from
    this directory.
 
-Until you do that swap, you can still deploy as-is for quick testing — it'll
-work within a single request/response cycle, but the roster and any
-in-progress uploads won't reliably survive between serverless invocations.
+Until you do that file-storage swap, you can still deploy as-is for quick
+testing, but in-progress uploads and generated downloads won't reliably survive
+between serverless invocations.
 For a **single always-on server** (e.g. a small VPS, Railway, Render, or
 your own machine) instead of Vercel, the local filesystem storage as
 shipped works fine permanently — just run `npm run build && npm run start`.
@@ -110,7 +107,6 @@ src/
   app/
     api/
       auth/login, auth/logout   — password gate
-      people, people/[id]       — roster CRUD
       upload                    — accepts .docx files, returns header previews
       generate                  — batch-generates N docs × M people, zips them
       generate-print            — creates one duplex-safe combined PDF
@@ -124,7 +120,7 @@ src/
     Dashboard.tsx                — roster + upload + generate UI
   lib/
     docxHeader.ts                — core header detection & replacement engine
-    peopleStore.ts                — roster persistence (swap for Postgres/KV on Vercel)
+    browserPeopleStore.ts         — browser-local roster persistence
     fileStore.ts                   — file persistence (swap for Blob on Vercel)
     auth.ts                        — password gate / session cookie
 ```

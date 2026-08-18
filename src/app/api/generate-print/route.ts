@@ -1,16 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthenticated } from "@/lib/auth";
 import { readUpload, saveGeneratedPdf, uploadPathFor } from "@/lib/fileStore";
-import { generateForPerson } from "@/lib/docxHeader";
+import { generateForPerson, type Person } from "@/lib/docxHeader";
 import { convertDocxToPdfWithRetry, mergeForDuplexPrint } from "@/lib/pdfPrint";
-import { listPeople } from "@/lib/peopleStore";
 
 export const runtime = "nodejs";
 
 type GeneratePrintRequestBody = {
   sessionId: string;
   files: { docId: string; originalName: string }[];
-  personIds?: string[];
+  people: Person[];
   selections?: { docId: string; personId: string }[];
 };
 
@@ -27,14 +26,15 @@ export async function POST(req: NextRequest) {
   if (!(await isAuthenticated())) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = (await req.json()) as GeneratePrintRequestBody;
-  const { sessionId, files, personIds, selections } = body ?? {};
+  const { sessionId, files, people, selections } = body ?? {};
   if (!sessionId || !files?.length) {
     return NextResponse.json({ error: "Missing sessionId or files" }, { status: 400 });
   }
 
-  const allPeople = await listPeople();
-  const people = personIds?.length ? allPeople.filter((p) => personIds.includes(p.id)) : allPeople;
-  if (!people.length) {
+  const validPeople = Array.isArray(people)
+    ? people.filter((person) => person.id && person.name.trim())
+    : [];
+  if (!validPeople.length) {
     return NextResponse.json({ error: "No people to generate for. Add people first." }, { status: 400 });
   }
   if (selections && selections.length === 0) {
@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  for (const person of people) {
+  for (const person of validPeople) {
     for (const file of files) {
       if (selectedPairs && !selectedPairs.has(`${file.docId}:${person.id}`)) continue;
       const buffer = uploadBuffers.get(file.docId);

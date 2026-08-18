@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
     let detection;
     try {
       detection = await detectHeader(buffer);
-    } catch (e) {
+    } catch {
       results.push({
         originalName: file.name,
         docId: uploaded.id,

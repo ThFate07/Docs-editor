@@ -2,15 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import JSZip from "jszip";
 import { isAuthenticated } from "@/lib/auth";
 import { readUpload, uploadPathFor, saveGeneratedZip } from "@/lib/fileStore";
-import { generateForPerson } from "@/lib/docxHeader";
-import { listPeople } from "@/lib/peopleStore";
+import { generateForPerson, type Person } from "@/lib/docxHeader";
 
 export const runtime = "nodejs";
 
 type GenerateRequestBody = {
   sessionId: string;
   files: { docId: string; originalName: string }[];
-  personIds?: string[]; // if omitted, use everyone in the saved list
+  people: Person[];
   selections?: { docId: string; personId: string }[];
 };
 
@@ -22,14 +21,15 @@ export async function POST(req: NextRequest) {
   if (!(await isAuthenticated())) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = (await req.json()) as GenerateRequestBody;
-  const { sessionId, files, personIds, selections } = body ?? {};
+  const { sessionId, files, people, selections } = body ?? {};
   if (!sessionId || !files?.length) {
     return NextResponse.json({ error: "Missing sessionId or files" }, { status: 400 });
   }
 
-  const allPeople = await listPeople();
-  const people = personIds?.length ? allPeople.filter((p) => personIds.includes(p.id)) : allPeople;
-  if (!people.length) {
+  const validPeople = Array.isArray(people)
+    ? people.filter((person) => person.id && person.name.trim())
+    : [];
+  if (!validPeople.length) {
     return NextResponse.json({ error: "No people to generate for. Add people first." }, { status: 400 });
   }
   if (selections && selections.length === 0) {
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
     }
 
     const baseName = file.originalName.replace(/\.docx$/i, "");
-    for (const person of people) {
+    for (const person of validPeople) {
       if (selectedPairs && !selectedPairs.has(`${file.docId}:${person.id}`)) continue;
       try {
         const out = await generateForPerson(buffer, person);
