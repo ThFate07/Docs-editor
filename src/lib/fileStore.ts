@@ -57,6 +57,34 @@ export async function readGeneratedZip(sessionId: string): Promise<Buffer> {
   return fs.readFile(zipPath);
 }
 
+export async function saveGeneratedPdf(sessionId: string, buffer: Buffer): Promise<string> {
+  await ensureDirs();
+  const sessionDir = path.join(GENERATED_DIR, sessionId);
+  await fs.mkdir(sessionDir, { recursive: true });
+  const pdfPath = path.join(sessionDir, "combined-print.pdf");
+  await fs.writeFile(pdfPath, buffer);
+  return pdfPath;
+}
+
+export async function readGeneratedPdf(sessionId: string): Promise<Buffer> {
+  const pdfPath = path.join(GENERATED_DIR, sessionId, "combined-print.pdf");
+  return fs.readFile(pdfPath);
+}
+
+export async function saveUploadedCombinedPdf(sessionId: string, buffer: Buffer): Promise<string> {
+  await ensureDirs();
+  const sessionDir = path.join(GENERATED_DIR, sessionId);
+  await fs.mkdir(sessionDir, { recursive: true });
+  const pdfPath = path.join(sessionDir, "uploaded-combined-print.pdf");
+  await fs.writeFile(pdfPath, buffer);
+  return pdfPath;
+}
+
+export async function readUploadedCombinedPdf(sessionId: string): Promise<Buffer> {
+  const pdfPath = path.join(GENERATED_DIR, sessionId, "uploaded-combined-print.pdf");
+  return fs.readFile(pdfPath);
+}
+
 export function newSessionId(): string {
   return randomUUID();
 }

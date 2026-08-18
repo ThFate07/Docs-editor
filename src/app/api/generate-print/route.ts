@@ -1,17 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
-import JSZip from "jszip";
 import { isAuthenticated } from "@/lib/auth";
-import { readUpload, uploadPathFor, saveGeneratedZip } from "@/lib/fileStore";
+import { readUpload, saveGeneratedPdf, uploadPathFor } from "@/lib/fileStore";
 import { generateForPerson } from "@/lib/docxHeader";
+import { convertDocxToPdfWithRetry, mergeForDuplexPrint } from "@/lib/pdfPrint";
 import { listPeople } from "@/lib/peopleStore";
 
 export const runtime = "nodejs";
 
-type GenerateRequestBody = {
+type GeneratePrintRequestBody = {
   sessionId: string;
   files: { docId: string; originalName: string }[];
-  personIds?: string[]; // if omitted, use everyone in the saved list
+  personIds?: string[];
   selections?: { docId: string; personId: string }[];
+};
+
+type GeneratedDoc = {
+  fileName: string;
+  docx: Buffer;
 };
 
 function sanitizeForFilename(name: string): string {
@@ -21,7 +26,7 @@ function sanitizeForFilename(name: string): string {
 export async function POST(req: NextRequest) {
   if (!(await isAuthenticated())) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const body = (await req.json()) as GenerateRequestBody;
+  const body = (await req.json()) as GeneratePrintRequestBody;
   const { sessionId, files, personIds, selections } = body ?? {};
   if (!sessionId || !files?.length) {
     return NextResponse.json({ error: "Missing sessionId or files" }, { status: 400 });
@@ -36,29 +41,30 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Select at least one doc/person pair to generate." }, { status: 400 });
   }
 
-  const selectedPairs = selections ? new Set(selections.map((s) => `${s.docId}:${s.personId}`)) : null;
-
-  const zip = new JSZip();
+  const generatedDocs: GeneratedDoc[] = [];
   const errors: { file: string; person: string; message: string }[] = [];
-  let successCount = 0;
+  const selectedPairs = selections ? new Set(selections.map((s) => `${s.docId}:${s.personId}`)) : null;
+  const uploadBuffers = new Map<string, Buffer>();
 
   for (const file of files) {
-    let buffer: Buffer;
     try {
-      buffer = await readUpload(uploadPathFor(sessionId, file.docId));
+      uploadBuffers.set(file.docId, await readUpload(uploadPathFor(sessionId, file.docId)));
     } catch {
       errors.push({ file: file.originalName, person: "*", message: "Uploaded file could not be found (session may have expired)" });
-      continue;
     }
+  }
 
-    const baseName = file.originalName.replace(/\.docx$/i, "");
-    for (const person of people) {
+  for (const person of people) {
+    for (const file of files) {
       if (selectedPairs && !selectedPairs.has(`${file.docId}:${person.id}`)) continue;
+      const buffer = uploadBuffers.get(file.docId);
+      if (!buffer) continue;
+
       try {
-        const out = await generateForPerson(buffer, person);
+        const docx = await generateForPerson(buffer, person);
+        const baseName = file.originalName.replace(/\.docx$/i, "");
         const fileName = `${sanitizeForFilename(baseName)}_${sanitizeForFilename(person.name)}.docx`;
-        zip.file(fileName, out);
-        successCount++;
+        generatedDocs.push({ fileName, docx });
       } catch (e) {
         errors.push({
           file: file.originalName,
@@ -69,18 +75,37 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  if (successCount === 0) {
-    return NextResponse.json({ error: "Nothing was generated", errors }, { status: 500 });
+  if (errors.length > 0 || generatedDocs.length === 0) {
+    return NextResponse.json({ error: "Could not prepare every document for print PDF", errors }, { status: 500 });
   }
 
-  const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
-  await saveGeneratedZip(sessionId, zipBuffer);
+  const pdfBuffers: Buffer[] = [];
+  for (const doc of generatedDocs) {
+    try {
+      pdfBuffers.push(await convertDocxToPdfWithRetry(doc));
+    } catch (e) {
+      errors.push({
+        file: doc.fileName,
+        person: "*",
+        message: e instanceof Error ? e.message : "Unknown error converting this file",
+      });
+    }
+  }
+
+  if (errors.length > 0) {
+    return NextResponse.json({ error: "Could not convert every document to PDF", errors }, { status: 502 });
+  }
+
+  const { pdf, pageCount, blankPagesAdded } = await mergeForDuplexPrint(pdfBuffers);
+  await saveGeneratedPdf(sessionId, pdf);
 
   return NextResponse.json({
     ok: true,
     sessionId,
-    generatedCount: successCount,
+    generatedCount: generatedDocs.length,
+    pageCount,
+    blankPagesAdded,
     errors,
-    downloadUrl: `/api/download?sessionId=${encodeURIComponent(sessionId)}`,
+    downloadUrl: `/api/download-print?sessionId=${encodeURIComponent(sessionId)}`,
   });
 }

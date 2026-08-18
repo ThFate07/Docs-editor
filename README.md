@@ -17,6 +17,12 @@ zipped up and ready to download.
 3. **Generate** — pick which people to generate for, hit Generate, and
    download a `.zip` containing `originalname_PersonName.docx` for every
    doc × person combination.
+4. **Print PDF** — use **Generate combined print PDF** to convert the same
+   personalized docs to one duplex-safe PDF. A blank page is inserted after
+   any odd-page document before the next document, so each one starts on the
+   front side of a sheet.
+5. **Uploaded-doc PDF** — use **Combine uploaded docs as PDF** when you want
+   the uploaded files merged as-is without personalizing headers first.
 
 The header logic only edits the `Name:` / `Class:` / `Roll No:` fields — the
 rest of each document (body content, formatting, images, etc.) is left
@@ -37,6 +43,7 @@ Open http://localhost:3000 and log in with the password you set.
 | Variable       | Description                                      |
 |----------------|---------------------------------------------------|
 | `APP_PASSWORD` | The password required to log into the app.        |
+| `GOTENBERG_URL` | Gotenberg service URL for combined print PDFs.   |
 
 ## Deploying to Vercel
 
@@ -81,25 +88,20 @@ shipped works fine permanently — just run `npm run build && npm run start`.
   with unusual/split runs this may occasionally miss the original visual
   styling of the value — but it will never corrupt the file.
 
-## Planned: Merge & Print (not built yet)
+## Combined print PDF
 
-A future "merge all generated docs into one file for printing" feature is
-planned, with **duplex (double-sided) printing** in mind: each person's
-doc needs to start on the front of a new physical sheet, so nobody's
-experiment prints on the back of someone else's. This will require:
+The print flow uses Gotenberg to convert each generated `.docx` into a PDF,
+then merges those PDFs locally. If a document has an odd page count and
+another document follows it, the app inserts a blank page before merging the
+next document. That keeps duplex printing from putting the next person's
+experiment on the back of the previous person's final sheet.
 
-- Converting each generated `.docx` to PDF to get an accurate page count
-  (Word page counts aren't knowable without actually rendering the
-  document — the `docx` library used here can't tell you this).
-- Appending a blank page after any doc with an odd page count, so the next
-  doc always starts on a fresh sheet under duplex printing.
-- Since Vercel serverless functions can't run LibreOffice directly, this
-  will need an external conversion service (e.g. Gotenberg, CloudConvert)
-  or a small separate microservice hosted somewhere that allows it
-  (Railway/Render/Fly.io).
+The uploaded-doc PDF flow uses the same conversion and duplex-safe merge, but
+it converts the uploaded documents as-is instead of generating personalized
+copies.
 
-The current generation code keeps each person's document as a self-contained
-buffer, so wiring this up later should be additive rather than a rewrite.
+Set `GOTENBERG_URL` to your Gotenberg service, for example a Render-hosted
+URL such as `https://gotenberg-8-libreoffice-xowd.onrender.com`.
 
 ## Project structure
 
@@ -111,7 +113,11 @@ src/
       people, people/[id]       — roster CRUD
       upload                    — accepts .docx files, returns header previews
       generate                  — batch-generates N docs × M people, zips them
+      generate-print            — creates one duplex-safe combined PDF
+      combine-uploaded-print    — combines uploaded docs as-is into one PDF
       download                  — serves the generated zip
+      download-print            — serves the generated combined PDF
+      download-uploaded-print   — serves the uploaded-doc combined PDF
     page.tsx                    — login gate / dashboard switch
   components/
     LoginForm.tsx

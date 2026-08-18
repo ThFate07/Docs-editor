@@ -38,6 +38,8 @@ const LABEL_PATTERNS = {
   rollNo: /roll[ ]*no\.?[ ]*:?[ ]*/i,
 };
 
+const DEFAULT_RIGHT_TAB_POS = 9360; // Letter width minus default 1" left/right margins.
+
 function xmlEscape(str: string): string {
   return str
     .replace(/&/g, "&amp;")
@@ -148,6 +150,35 @@ function extractField(
   return { start: valueStart, end: valueStart + (text.slice(valueStart, valueEnd).length), value };
 }
 
+function readNumericAttr(tag: string, attrName: string): number | null {
+  const match = new RegExp(`\\b${attrName}="(\\d+)"`).exec(tag);
+  return match ? Number(match[1]) : null;
+}
+
+function getRightTabPositionFromDocumentXml(documentXml: string): number {
+  const sectPr = /<w:sectPr\b[\s\S]*?<\/w:sectPr>/.exec(documentXml)?.[0] ?? documentXml;
+  const pgSzTag = /<w:pgSz\b[^>]*\/?>/.exec(sectPr)?.[0];
+  const pgMarTag = /<w:pgMar\b[^>]*\/?>/.exec(sectPr)?.[0];
+
+  if (!pgSzTag || !pgMarTag) return DEFAULT_RIGHT_TAB_POS;
+
+  const pageWidth = readNumericAttr(pgSzTag, "w:w");
+  const leftMargin = readNumericAttr(pgMarTag, "w:left");
+  const rightMargin = readNumericAttr(pgMarTag, "w:right");
+
+  if (!pageWidth || leftMargin === null || rightMargin === null) return DEFAULT_RIGHT_TAB_POS;
+
+  const tabPosition = pageWidth - leftMargin - rightMargin;
+  return tabPosition > 0 ? tabPosition : DEFAULT_RIGHT_TAB_POS;
+}
+
+async function getRightTabPosition(zip: JSZip): Promise<number> {
+  const docFile = zip.file("word/document.xml");
+  if (!docFile) return DEFAULT_RIGHT_TAB_POS;
+  const documentXml = await docFile.async("string");
+  return getRightTabPositionFromDocumentXml(documentXml);
+}
+
 function detectFromXml(xml: string): HeaderDetection {
   const segments = tokenize(xml);
   const { text } = buildPlainText(segments);
@@ -180,121 +211,9 @@ function detectFromXml(xml: string): HeaderDetection {
   };
 }
 
-/**
- * Replace the Name/Class/Roll No values in a header XML string with new
- * values from `person`, doing minimal surgery on the underlying <w:t> runs
- * so all surrounding formatting (fonts, bold, tabs, spacing) is preserved.
- */
-function replaceInXml(xml: string, person: Person): string {
-  const segments = tokenize(xml);
-  const { text } = buildPlainText(segments);
-
-  const fields: { field: ReturnType<typeof extractField>; newValue: string }[] = [
-    { field: extractField(text, LABEL_PATTERNS.name, [LABEL_PATTERNS.className, LABEL_PATTERNS.rollNo]), newValue: person.name },
-    { field: extractField(text, LABEL_PATTERNS.className, [LABEL_PATTERNS.name, LABEL_PATTERNS.rollNo]), newValue: person.className },
-    { field: extractField(text, LABEL_PATTERNS.rollNo, [LABEL_PATTERNS.name, LABEL_PATTERNS.className]), newValue: person.rollNo },
-  ];
-
-  // Map each plain-text char offset back to (segment, charOffsetInSeg)
-  const offsetToSegment: { segIdx: number; charOffsetInSeg: number }[] = [];
-  segments.forEach((seg, idx) => {
-    for (let i = 0; i < seg.value.length; i++) {
-      offsetToSegment.push({ segIdx: idx, charOffsetInSeg: i });
-    }
-  });
-
-  // For each segment, track pending [start,end) char ranges (in seg.value) to blank out,
-  // and a single insertion of new text at the *first* range encountered for a field.
-  const segEdits: Map<number, { ranges: { start: number; end: number; insert?: string }[] }> = new Map();
-
-  for (const { field, newValue } of fields) {
-    if (!field) continue; // label not found at all
-
-    if (field.end <= field.start) {
-      // Empty/placeholder value (e.g. "Name: " with nothing after it) — insert
-      // the new value at this zero-width position instead of replacing a range.
-      // Prefer appending to the end of the text segment just before the gap
-      // (keeps it in the same run/formatting as the label); fall back to the
-      // segment right at the gap if there's nothing before it.
-      const before = field.start > 0 ? offsetToSegment[field.start - 1] : undefined;
-      const at = offsetToSegment[field.start];
-      let target: { segIdx: number; pos: number } | null = null;
-      if (before && segments[before.segIdx].type === "text") {
-        target = { segIdx: before.segIdx, pos: before.charOffsetInSeg + 1 };
-      } else if (at && segments[at.segIdx].type === "text") {
-        target = { segIdx: at.segIdx, pos: at.charOffsetInSeg };
-      }
-      if (target) {
-        if (!segEdits.has(target.segIdx)) segEdits.set(target.segIdx, { ranges: [] });
-        segEdits.get(target.segIdx)!.ranges.push({ start: target.pos, end: target.pos, insert: newValue });
-      }
-      continue;
-    }
-
-    let firstRangeHandled = false;
-    for (let pos = field.start; pos < field.end; ) {
-      const mapping = offsetToSegment[pos];
-      if (!mapping) break;
-      const seg = segments[mapping.segIdx];
-      if (seg.type !== "text") {
-        pos++;
-        continue;
-      }
-      // find contiguous run within this segment covered by [pos, field.end)
-      let endInSeg = mapping.charOffsetInSeg;
-      let p = pos;
-      while (
-        p < field.end &&
-        offsetToSegment[p] &&
-        offsetToSegment[p].segIdx === mapping.segIdx
-      ) {
-        endInSeg = offsetToSegment[p].charOffsetInSeg + 1;
-        p++;
-      }
-      const startInSeg = mapping.charOffsetInSeg;
-      if (!segEdits.has(mapping.segIdx)) segEdits.set(mapping.segIdx, { ranges: [] });
-      segEdits.get(mapping.segIdx)!.ranges.push({
-        start: startInSeg,
-        end: endInSeg,
-        insert: !firstRangeHandled ? newValue : "",
-      });
-      firstRangeHandled = true;
-      pos = p;
-    }
-  }
-
-  if (segEdits.size === 0) return xml;
-
-  // Apply edits to raw XML string, working from the end of the string backwards
-  // so earlier offsets remain valid.
-  const edits: { matchStart: number; matchEnd: number; newInner: string }[] = [];
-  segEdits.forEach((editInfo, segIdx) => {
-    const seg = segments[segIdx];
-    if (seg.type !== "text") return;
-    // Sort ranges and rebuild the segment's inner text
-    const ranges = editInfo.ranges.sort((a, b) => a.start - b.start);
-    let rebuilt = "";
-    let cursor = 0;
-    for (const r of ranges) {
-      rebuilt += seg.value.slice(cursor, r.start);
-      rebuilt += r.insert ?? "";
-      cursor = r.end;
-    }
-    rebuilt += seg.value.slice(cursor);
-    edits.push({ matchStart: seg.innerStart, matchEnd: seg.innerEnd, newInner: xmlEscape(rebuilt) });
-  });
-
-  edits.sort((a, b) => b.matchStart - a.matchStart);
-  let out = xml;
-  for (const e of edits) {
-    out = out.slice(0, e.matchStart) + e.newInner + out.slice(e.matchEnd);
-  }
-  return out;
-}
-
-const DEFAULT_HEADER_XML = (person: Person) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+const DEFAULT_HEADER_XML = (person: Person, rightTabPosition: number) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-<w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="4500"/></w:tabs></w:pPr>
+<w:p><w:pPr><w:tabs><w:tab w:val="right" w:pos="${rightTabPosition}"/></w:tabs></w:pPr>
 <w:r><w:t xml:space="preserve">Name: ${xmlEscape(person.name)}</w:t></w:r>
 <w:r><w:tab/><w:t xml:space="preserve">Class: ${xmlEscape(person.className)}</w:t></w:r>
 </w:p>
@@ -351,13 +270,12 @@ async function findDefaultHeaderPath(zip: JSZip): Promise<string | null> {
 export async function generateForPerson(buffer: Buffer, person: Person): Promise<Buffer> {
   const zip = await JSZip.loadAsync(buffer);
   const headerPath = await findDefaultHeaderPath(zip);
+  const rightTabPosition = await getRightTabPosition(zip);
 
   if (headerPath && zip.file(headerPath)) {
-    const xml = await zip.file(headerPath)!.async("string");
-    const newXml = replaceInXml(xml, person);
-    zip.file(headerPath, newXml);
+    zip.file(headerPath, DEFAULT_HEADER_XML(person, rightTabPosition));
   } else {
-    await createDefaultHeader(zip, person);
+    await createDefaultHeader(zip, person, rightTabPosition);
   }
 
   const out = await zip.generateAsync({ type: "nodebuffer" });
@@ -369,9 +287,9 @@ export async function generateForPerson(buffer: Buffer, person: Person): Promise
  * [Content_Types].xml and word/_rels/document.xml.rels, and reference it
  * from the section properties in word/document.xml.
  */
-async function createDefaultHeader(zip: JSZip, person: Person): Promise<void> {
+async function createDefaultHeader(zip: JSZip, person: Person, rightTabPosition: number): Promise<void> {
   const HEADER_PATH = "word/header_generated.xml";
-  zip.file(HEADER_PATH, DEFAULT_HEADER_XML(person));
+  zip.file(HEADER_PATH, DEFAULT_HEADER_XML(person, rightTabPosition));
 
   // 1. [Content_Types].xml
   const ctPath = "[Content_Types].xml";
