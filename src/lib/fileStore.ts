@@ -1,23 +1,8 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { get, put, type GetBlobResult } from "@vercel/blob";
 
-/**
- * Local-filesystem-backed store for uploaded/generated files, keyed by a
- * session id (one "batch" of uploads at a time).
- *
- * On Vercel, the local filesystem is ephemeral per-invocation, so this
- * works for `next dev` / a traditional Node host, but for a real Vercel
- * deployment swap this for Vercel Blob — see README "Deploying to Vercel".
- */
-
-const UPLOADS_DIR = path.join(process.cwd(), "data", "uploads");
-const GENERATED_DIR = path.join(process.cwd(), "data", "generated");
-
-async function ensureDirs() {
-  await fs.mkdir(UPLOADS_DIR, { recursive: true });
-  await fs.mkdir(GENERATED_DIR, { recursive: true });
-}
+const ACCESS = "private" as const;
+const DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
 export type UploadedDoc = {
   id: string;
@@ -25,64 +10,114 @@ export type UploadedDoc = {
   storedPath: string;
 };
 
+async function streamToBuffer(stream: ReadableStream<Uint8Array>): Promise<Buffer> {
+  const arrayBuffer = await new Response(stream).arrayBuffer();
+  return Buffer.from(arrayBuffer);
+}
+
+async function readPrivateBlob(pathname: string): Promise<Buffer> {
+  const result = await get(pathname, { access: ACCESS, useCache: false });
+  if (!result || result.statusCode !== 200 || !result.stream) {
+    throw new Error(`Blob not found: ${pathname}`);
+  }
+  return streamToBuffer(result.stream);
+}
+
+async function getPrivateBlob(pathname: string): Promise<GetBlobResult & { statusCode: 200 }> {
+  const result = await get(pathname, { access: ACCESS, useCache: false });
+  if (!result || result.statusCode !== 200 || !result.stream) {
+    throw new Error(`Blob not found: ${pathname}`);
+  }
+  return result;
+}
+
+export function uploadPathFor(sessionId: string, docId: string): string {
+  return `uploads/${sessionId}/${docId}.docx`;
+}
+
+function generatedZipPath(sessionId: string): string {
+  return `generated/${sessionId}/batch.zip`;
+}
+
+function generatedPdfPath(sessionId: string): string {
+  return `generated/${sessionId}/combined-print.pdf`;
+}
+
+function uploadedCombinedPdfPath(sessionId: string): string {
+  return `generated/${sessionId}/uploaded-combined-print.pdf`;
+}
+
 export async function saveUpload(sessionId: string, originalName: string, buffer: Buffer): Promise<UploadedDoc> {
-  await ensureDirs();
-  const sessionDir = path.join(UPLOADS_DIR, sessionId);
-  await fs.mkdir(sessionDir, { recursive: true });
   const id = randomUUID();
-  const storedPath = path.join(sessionDir, `${id}.docx`);
-  await fs.writeFile(storedPath, buffer);
+  const storedPath = uploadPathFor(sessionId, id);
+  await put(storedPath, buffer, {
+    access: ACCESS,
+    contentType: DOCX_CONTENT_TYPE,
+    allowOverwrite: false,
+    multipart: true,
+  });
   return { id, originalName, storedPath };
 }
 
 export async function readUpload(storedPath: string): Promise<Buffer> {
-  return fs.readFile(storedPath);
-}
-
-export function uploadPathFor(sessionId: string, docId: string): string {
-  return path.join(UPLOADS_DIR, sessionId, `${docId}.docx`);
+  return readPrivateBlob(storedPath);
 }
 
 export async function saveGeneratedZip(sessionId: string, buffer: Buffer): Promise<string> {
-  await ensureDirs();
-  const sessionDir = path.join(GENERATED_DIR, sessionId);
-  await fs.mkdir(sessionDir, { recursive: true });
-  const zipPath = path.join(sessionDir, "batch.zip");
-  await fs.writeFile(zipPath, buffer);
-  return zipPath;
+  const pathname = generatedZipPath(sessionId);
+  await put(pathname, buffer, {
+    access: ACCESS,
+    contentType: "application/zip",
+    allowOverwrite: true,
+    multipart: true,
+  });
+  return pathname;
 }
 
 export async function readGeneratedZip(sessionId: string): Promise<Buffer> {
-  const zipPath = path.join(GENERATED_DIR, sessionId, "batch.zip");
-  return fs.readFile(zipPath);
+  return readPrivateBlob(generatedZipPath(sessionId));
+}
+
+export async function getGeneratedZip(sessionId: string): Promise<GetBlobResult & { statusCode: 200 }> {
+  return getPrivateBlob(generatedZipPath(sessionId));
 }
 
 export async function saveGeneratedPdf(sessionId: string, buffer: Buffer): Promise<string> {
-  await ensureDirs();
-  const sessionDir = path.join(GENERATED_DIR, sessionId);
-  await fs.mkdir(sessionDir, { recursive: true });
-  const pdfPath = path.join(sessionDir, "combined-print.pdf");
-  await fs.writeFile(pdfPath, buffer);
-  return pdfPath;
+  const pathname = generatedPdfPath(sessionId);
+  await put(pathname, buffer, {
+    access: ACCESS,
+    contentType: "application/pdf",
+    allowOverwrite: true,
+    multipart: true,
+  });
+  return pathname;
 }
 
 export async function readGeneratedPdf(sessionId: string): Promise<Buffer> {
-  const pdfPath = path.join(GENERATED_DIR, sessionId, "combined-print.pdf");
-  return fs.readFile(pdfPath);
+  return readPrivateBlob(generatedPdfPath(sessionId));
+}
+
+export async function getGeneratedPdf(sessionId: string): Promise<GetBlobResult & { statusCode: 200 }> {
+  return getPrivateBlob(generatedPdfPath(sessionId));
 }
 
 export async function saveUploadedCombinedPdf(sessionId: string, buffer: Buffer): Promise<string> {
-  await ensureDirs();
-  const sessionDir = path.join(GENERATED_DIR, sessionId);
-  await fs.mkdir(sessionDir, { recursive: true });
-  const pdfPath = path.join(sessionDir, "uploaded-combined-print.pdf");
-  await fs.writeFile(pdfPath, buffer);
-  return pdfPath;
+  const pathname = uploadedCombinedPdfPath(sessionId);
+  await put(pathname, buffer, {
+    access: ACCESS,
+    contentType: "application/pdf",
+    allowOverwrite: true,
+    multipart: true,
+  });
+  return pathname;
 }
 
 export async function readUploadedCombinedPdf(sessionId: string): Promise<Buffer> {
-  const pdfPath = path.join(GENERATED_DIR, sessionId, "uploaded-combined-print.pdf");
-  return fs.readFile(pdfPath);
+  return readPrivateBlob(uploadedCombinedPdfPath(sessionId));
+}
+
+export async function getUploadedCombinedPdf(sessionId: string): Promise<GetBlobResult & { statusCode: 200 }> {
+  return getPrivateBlob(uploadedCombinedPdfPath(sessionId));
 }
 
 export function newSessionId(): string {

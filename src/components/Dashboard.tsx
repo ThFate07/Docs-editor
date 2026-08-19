@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { upload } from "@vercel/blob/client";
 import {
   addBrowserPerson,
   deleteBrowserPerson,
@@ -23,6 +24,7 @@ type UploadResult = {
 };
 
 type GenerationSelection = { docId: string; personId: string };
+type UploadedBlobInput = { docId: string; originalName: string; pathname: string };
 
 const STATE_LABEL: Record<string, { label: string; color: string }> = {
   filled: { label: "Name found", color: "text-stamp-green" },
@@ -33,6 +35,17 @@ const STATE_LABEL: Record<string, { label: string; color: string }> = {
 
 function pairKey(docId: string, personId: string): string {
   return `${docId}:${personId}`;
+}
+
+function newClientId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function uploadPathForClient(sessionId: string, docId: string): string {
+  return `uploads/${sessionId}/${docId}.docx`;
 }
 
 export default function Dashboard() {
@@ -144,22 +157,62 @@ export default function Dashboard() {
 
   async function handleUpload(fileList: FileList | null) {
     if (!fileList || !fileList.length) return;
+    const activeSessionId = sessionId ?? newClientId();
     setUploading(true);
     setGenerateResult(null);
     setPrintResult(null);
     setUploadedPdfResult(null);
     setGenerateError(null);
-    const formData = new FormData();
-    Array.from(fileList).forEach((f) => formData.append("files", f));
-    const res = await fetch("/api/upload", { method: "POST", body: formData });
+    setSessionId(activeSessionId);
+
+    const uploadedFiles: UploadedBlobInput[] = [];
+    const immediateResults: UploadResult[] = [];
+
+    for (const file of Array.from(fileList)) {
+      if (!file.name.toLowerCase().endsWith(".docx")) {
+        immediateResults.push({ originalName: file.name, error: "Only .docx files are supported" });
+        continue;
+      }
+
+      const docId = newClientId();
+      const pathname = uploadPathForClient(activeSessionId, docId);
+      try {
+        const blob = await upload(pathname, file, {
+          access: "private",
+          handleUploadUrl: "/api/blob-upload",
+          multipart: true,
+          contentType: file.type || "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        });
+        uploadedFiles.push({ docId, originalName: file.name, pathname: blob.pathname });
+      } catch (error) {
+        immediateResults.push({
+          originalName: file.name,
+          error: error instanceof Error ? error.message : "Upload failed",
+        });
+      }
+    }
+
+    if (!uploadedFiles.length) {
+      setUploading(false);
+      setFiles((prev) => [...prev, ...immediateResults]);
+      setGenerateError(immediateResults.length ? "No valid files were uploaded." : "Upload failed");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    const res = await fetch("/api/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: activeSessionId, files: uploadedFiles }),
+    });
     const data = await res.json();
     setUploading(false);
     if (!res.ok) {
       setGenerateError(data.error ?? "Upload failed");
+      setFiles((prev) => [...prev, ...immediateResults]);
       return;
     }
-    setSessionId(data.sessionId);
-    setFiles((prev) => [...prev, ...data.files]);
+    setFiles((prev) => [...prev, ...immediateResults, ...data.files]);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 

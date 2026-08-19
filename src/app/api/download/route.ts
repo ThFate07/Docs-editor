@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthenticated } from "@/lib/auth";
-import { readGeneratedZip } from "@/lib/fileStore";
+import { getGeneratedZip } from "@/lib/fileStore";
 
 export const runtime = "nodejs";
 
@@ -11,11 +11,11 @@ export async function GET(req: NextRequest) {
   if (!sessionId) return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
 
   try {
-    const buffer = await readGeneratedZip(sessionId);
-    return new NextResponse(new Uint8Array(buffer), {
+    const blob = await getGeneratedZip(sessionId);
+    return new NextResponse(blob.stream, {
       status: 200,
       headers: {
-        "Content-Type": "application/zip",
+        "Content-Type": blob.blob.contentType || "application/zip",
         "Content-Disposition": `attachment; filename="experiment_docs_${sessionId.slice(0, 8)}.zip"`,
       },
     });

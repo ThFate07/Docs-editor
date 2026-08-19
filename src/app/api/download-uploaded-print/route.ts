@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthenticated } from "@/lib/auth";
-import { readUploadedCombinedPdf } from "@/lib/fileStore";
+import { getUploadedCombinedPdf } from "@/lib/fileStore";
 
 export const runtime = "nodejs";
 
@@ -11,11 +11,11 @@ export async function GET(req: NextRequest) {
   if (!sessionId) return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
 
   try {
-    const buffer = await readUploadedCombinedPdf(sessionId);
-    return new NextResponse(new Uint8Array(buffer), {
+    const blob = await getUploadedCombinedPdf(sessionId);
+    return new NextResponse(blob.stream, {
       status: 200,
       headers: {
-        "Content-Type": "application/pdf",
+        "Content-Type": blob.blob.contentType || "application/pdf",
         "Content-Disposition": `attachment; filename="uploaded_combined_print_${sessionId.slice(0, 8)}.pdf"`,
       },
     });

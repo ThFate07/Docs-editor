@@ -32,7 +32,7 @@ completely untouched.
 
 ```bash
 npm install
-cp .env.example .env.local   # then edit APP_PASSWORD below
+cp .env.example .env.local   # then edit APP_PASSWORD and BLOB_READ_WRITE_TOKEN below
 npm run dev
 ```
 
@@ -40,35 +40,27 @@ Open http://localhost:3000 and log in with the password you set.
 
 ### Environment variables
 
-| Variable       | Description                                      |
-|----------------|---------------------------------------------------|
-| `APP_PASSWORD` | The password required to log into the app.        |
-| `GOTENBERG_URL` | Gotenberg service URL for combined print PDFs.   |
+| Variable | Description |
+|----------|-------------|
+| `APP_PASSWORD` | The password required to log into the app. |
+| `GOTENBERG_URL` | Gotenberg service URL for combined print PDFs. |
+| `BLOB_READ_WRITE_TOKEN` | Vercel Blob token for uploaded docs and generated outputs. |
 
 ## Deploying to Vercel
 
 The people roster is browser-local and does not use Vercel server storage.
 Each browser/device gets its own saved roster.
 
-This app still stores uploaded and generated files on the local server
-filesystem (`/data`). That can work during a warm serverless invocation, but it
-is not durable on Vercel because functions have an ephemeral filesystem. For
-production-grade file handling on Vercel:
+Uploaded `.docx` files and generated downloads are stored in private
+[Vercel Blob](https://vercel.com/docs/storage/vercel-blob) objects. Browser
+uploads go directly to Blob so large documents do not hit Vercel Function body
+limits.
 
-1. **Uploaded / generated files** → replace `src/lib/fileStore.ts` with a
-   version backed by [Vercel Blob](https://vercel.com/docs/storage/vercel-blob).
-   Same idea: keep the exported function signatures the same.
-2. Set `APP_PASSWORD` as an environment variable in the Vercel dashboard
-   (Project Settings → Environment Variables).
+1. Create or connect a Vercel Blob store for the project.
+2. Set `APP_PASSWORD`, `BLOB_READ_WRITE_TOKEN`, and `GOTENBERG_URL` in Vercel
+   Project Settings -> Environment Variables.
 3. Push to a Git repo and import it in Vercel, or run `vercel deploy` from
    this directory.
-
-Until you do that file-storage swap, you can still deploy as-is for quick
-testing, but in-progress uploads and generated downloads won't reliably survive
-between serverless invocations.
-For a **single always-on server** (e.g. a small VPS, Railway, Render, or
-your own machine) instead of Vercel, the local filesystem storage as
-shipped works fine permanently — just run `npm run build && npm run start`.
 
 ## Known limitations (by design, for this v1)
 
@@ -107,7 +99,8 @@ src/
   app/
     api/
       auth/login, auth/logout   — password gate
-      upload                    — accepts .docx files, returns header previews
+      blob-upload               — issues constrained Vercel Blob upload tokens
+      upload                    — reads uploaded Blobs, returns header previews
       generate                  — batch-generates N docs × M people, zips them
       generate-print            — creates one duplex-safe combined PDF
       combine-uploaded-print    — combines uploaded docs as-is into one PDF
@@ -121,6 +114,6 @@ src/
   lib/
     docxHeader.ts                — core header detection & replacement engine
     browserPeopleStore.ts         — browser-local roster persistence
-    fileStore.ts                   — file persistence (swap for Blob on Vercel)
+    fileStore.ts                   — private Vercel Blob persistence
     auth.ts                        — password gate / session cookie
 ```

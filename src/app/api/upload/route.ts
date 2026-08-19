@@ -1,44 +1,68 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthenticated } from "@/lib/auth";
-import { newSessionId, saveUpload } from "@/lib/fileStore";
+import { readUpload, uploadPathFor } from "@/lib/fileStore";
 import { detectHeader } from "@/lib/docxHeader";
 
 export const runtime = "nodejs";
 
+type UploadedBlobInput = {
+  docId: string;
+  originalName: string;
+  pathname: string;
+};
+
+type UploadAnalyzeRequestBody = {
+  sessionId: string;
+  files: UploadedBlobInput[];
+};
+
 export async function POST(req: NextRequest) {
   if (!(await isAuthenticated())) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const formData = await req.formData();
-  const files = formData.getAll("files") as File[];
-  if (!files.length) return NextResponse.json({ error: "No files uploaded" }, { status: 400 });
+  const body = (await req.json()) as UploadAnalyzeRequestBody;
+  const { sessionId, files } = body ?? {};
+  if (!sessionId) return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
+  if (!Array.isArray(files) || !files.length) {
+    return NextResponse.json({ error: "No files uploaded" }, { status: 400 });
+  }
 
-  const sessionId = newSessionId();
   const results = [];
 
   for (const file of files) {
-    if (!file.name.toLowerCase().endsWith(".docx")) {
-      results.push({ originalName: file.name, error: "Only .docx files are supported" });
+    if (!file.originalName.toLowerCase().endsWith(".docx")) {
+      results.push({ originalName: file.originalName, error: "Only .docx files are supported" });
       continue;
     }
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    const uploaded = await saveUpload(sessionId, file.name, buffer);
+
+    const expectedPathname = uploadPathFor(sessionId, file.docId);
+    if (file.pathname !== expectedPathname) {
+      results.push({ originalName: file.originalName, error: "Uploaded file path did not match this session" });
+      continue;
+    }
+
+    let buffer: Buffer;
+    try {
+      buffer = await readUpload(expectedPathname);
+    } catch {
+      results.push({ originalName: file.originalName, docId: file.docId, error: "Uploaded file could not be found" });
+      continue;
+    }
 
     let detection;
     try {
       detection = await detectHeader(buffer);
     } catch {
       results.push({
-        originalName: file.name,
-        docId: uploaded.id,
+        originalName: file.originalName,
+        docId: file.docId,
         error: "Could not read this file — is it a valid .docx?",
       });
       continue;
     }
 
     results.push({
-      originalName: file.name,
-      docId: uploaded.id,
+      originalName: file.originalName,
+      docId: file.docId,
       state: detection.state,
       rawText: detection.rawText,
       detected: detection.detected,
