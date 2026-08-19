@@ -32,7 +32,7 @@ completely untouched.
 
 ```bash
 npm install
-cp .env.example .env.local   # then edit APP_PASSWORD and BLOB_READ_WRITE_TOKEN below
+cp .env.example .env.local   # then edit APP_PASSWORD and Blob values below
 npm run dev
 ```
 
@@ -44,7 +44,9 @@ Open http://localhost:3000 and log in with the password you set.
 |----------|-------------|
 | `APP_PASSWORD` | The password required to log into the app. |
 | `GOTENBERG_URL` | Gotenberg service URL for combined print PDFs. |
-| `BLOB_READ_WRITE_TOKEN` | Vercel Blob token for uploaded docs and generated outputs. |
+| `BLOB_STORE_ID` | Vercel Blob store id created when using the default OIDC connection. |
+| `BLOB_WEBHOOK_PUBLIC_KEY` | Vercel Blob webhook public key created with the connected store. |
+| `BLOB_READ_WRITE_TOKEN` | Optional fallback for older/manual Blob setups. |
 
 ## Deploying to Vercel
 
@@ -57,9 +59,12 @@ uploads go directly to Blob so large documents do not hit Vercel Function body
 limits.
 
 1. Create or connect a Vercel Blob store for the project.
-2. Set `APP_PASSWORD`, `BLOB_READ_WRITE_TOKEN`, and `GOTENBERG_URL` in Vercel
-   Project Settings -> Environment Variables.
-3. Push to a Git repo and import it in Vercel, or run `vercel deploy` from
+2. Keep the default custom environment variable prefix as `BLOB`. New Vercel
+   Blob project connections use OIDC and create `BLOB_STORE_ID` plus
+   `BLOB_WEBHOOK_PUBLIC_KEY`.
+3. Set `APP_PASSWORD` and `GOTENBERG_URL` in Vercel Project Settings ->
+   Environment Variables.
+4. Push to a Git repo and import it in Vercel, or run `vercel deploy` from
    this directory.
 
 ## Known limitations (by design, for this v1)
