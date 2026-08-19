@@ -44,9 +44,9 @@ Open http://localhost:3000 and log in with the password you set.
 |----------|-------------|
 | `APP_PASSWORD` | The password required to log into the app. |
 | `GOTENBERG_URL` | Gotenberg service URL for combined print PDFs. |
+| `BLOB_READ_WRITE_TOKEN` | Vercel Blob read-write token for uploaded docs and generated outputs. |
 | `BLOB_STORE_ID` | Vercel Blob store id created when using the default OIDC connection. |
 | `BLOB_WEBHOOK_PUBLIC_KEY` | Vercel Blob webhook public key created with the connected store. |
-| `BLOB_READ_WRITE_TOKEN` | Optional fallback for older/manual Blob setups. |
 
 ## Deploying to Vercel
 
@@ -60,8 +60,9 @@ limits.
 
 1. Create or connect a Vercel Blob store for the project.
 2. Keep the default custom environment variable prefix as `BLOB`. New Vercel
-   Blob project connections use OIDC and create `BLOB_STORE_ID` plus
-   `BLOB_WEBHOOK_PUBLIC_KEY`.
+   Blob project connections create `BLOB_STORE_ID` plus
+   `BLOB_WEBHOOK_PUBLIC_KEY`; enable "Add a read-write token env var to this
+   connection" so Vercel also creates `BLOB_READ_WRITE_TOKEN`.
 3. Set `APP_PASSWORD` and `GOTENBERG_URL` in Vercel Project Settings ->
    Environment Variables.
 4. Push to a Git repo and import it in Vercel, or run `vercel deploy` from
